@@ -92,7 +92,7 @@ def fetch_file_via_ftp(ip_address: str, remote_filename: str) -> str | None:
 if __name__ == '__main__':
     # --- Example Usage (Requires a running FTP server for testing) ---
     # NOTE: Replace with actual credentials/server details for real use.
-    TEST_IP = "192.168.10.34" # A public test FTP server
+    TEST_IP = "192.168.10.35" # A public test FTP server
     TEST_FILE = "MEMDATA.TXT"   # A file known to exist on the test server
 
     print("--- Running FTP Test Example ---")

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from tempfile import gettempdir
 
 
 def read_memdata(file_path: str | Path) -> tuple[list[float], list[list[float]]]:
@@ -102,7 +104,8 @@ def plot_memdata(
     plt.show()
 
 if __name__ == "__main__":
-    TEST_FILE_PATH = "MEMDATA.TXT"
+    TEST_FILE_PATH = os.path.join(gettempdir(), "MEMDATA.TXT")
+    # TEST_FILE_PATH = "C:/Users/stuphi/AppData/Local/Temp/MEMDATA.TXT"
     try:
         time_seconds, voltage_columns = read_memdata(TEST_FILE_PATH)
         print(f"Successfully read {len(time_seconds)} samples from {TEST_FILE_PATH}.")
