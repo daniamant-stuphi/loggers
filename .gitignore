@@ -9,15 +9,19 @@ dist/
 *.egg-info/
 
 # IDE and OS specific files
-.idea/          # IntelliJ/PyCharm project files
-__pycache__/    # Python compiled cache directories
+# IntelliJ/PyCharm project files
+.idea/
+# Python compiled cache directories
+__pycache__/
 *.pyc
 *.pyo
 
 # Logs and Data (Based on existing files)
 *.log
-test.xlsx       # Assuming this is generated data, not source code
-Screenshot*     # Image artifacts
+# Assuming this is generated data, not source code
+test.xlsx
+# Image artifacts
+Screenshot*
 
 # Dependency management folders (if they are local copies)
 install/

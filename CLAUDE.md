@@ -48,5 +48,6 @@ The checked-in sample `MEMDATA.TXT` is about 317k lines. Don't read it whole; us
 
 ## Gotchas
 
-- `.gitignore` uses inline `# comments` after patterns, but git doesn't support those. As a result, `test.xlsx`, `Screenshot*` and `__pycache__/` are not actually ignored (the first two are committed).
+- `test.xlsx` and the `Screenshot*` PNG are listed in `.gitignore`, but they were committed before that, so git still tracks them.
+- Keep `.gitignore` comments on their own lines. Git treats a `# comment` after a pattern as part of the pattern.
 - PyInstaller is installed but not listed in `requirements.txt`. If new runtime dependencies are added (e.g. an Excel library), update `requirements.txt` and check `app.spec` (`hiddenimports`/`datas`).
