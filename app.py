@@ -5,8 +5,17 @@ loggers and configure various parameters.
 """
 
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 import logging
+import os
+import threading
+from tempfile import gettempdir
+
+import numpy as np
+
+import mem2txt
+import report
+from ftp_utils import fetch_file_via_ftp
 
 # Constants
 WINDOW_TITLE = "Select Options"
@@ -29,10 +38,23 @@ LOGGER_OPTIONS = {
 
 # Logger IP addresses
 LOGGER_IPS = {
-    1: "192.168.10.34",  # Logger 4
-    2: "192.168.10.35",  # Logger 5
+    # 1: "192.168.10.34",  # Logger 4
+    # 2: "192.168.10.35",  # Logger 5
+    1: "192.168.10.54",  # Logger 4
+    2: "192.168.10.55",  # Logger 5
     3: "0.0.0.0"   # Recover Old Data
 }
+
+# Selecting this logger option reuses the last downloaded MEMDATA.MEM
+RECOVER_OLD_DATA = 3
+
+# Logger memory file and its text conversion, both kept in the temp directory
+MEM_FILENAME = "MEMDATA.MEM"
+MEM_PATH = os.path.join(gettempdir(), MEM_FILENAME)
+TXT_PATH = os.path.join(gettempdir(), "MEMDATA.TXT")
+
+# How often the progress dialog checks on the download/conversion thread
+PROGRESS_POLL_MS = 100
 
 # Configure logger
 logging.basicConfig(level=logging.INFO)
@@ -61,7 +83,7 @@ class ReportGeneratorApp:
 
     def _setup_variables(self) -> None:
         """Initialize tkinter variables for user selections."""
-        self.logger_selection = tk.IntVar(value=2)
+        self.logger_selection = tk.IntVar(value=3)  # Recover Old Data
         self.flashing_lights_enabled = tk.BooleanVar(value=False)
         self.battery_voltage_enabled = tk.BooleanVar(value=False)
 
@@ -208,15 +230,192 @@ class ReportGeneratorApp:
             battery_enabled,
         )
 
-        messagebox.showinfo(
-            "Success",
-            f"Report generated successfully!\n\n"
+        if not (flashing_enabled or battery_enabled):
+            messagebox.showerror(
+                "No Option Selected",
+                "Select Flashing Lights and/or Battery Voltage to choose "
+                "which values the report keeps.",
+            )
+            return
+
+        if logger_choice == RECOVER_OLD_DATA and not os.path.exists(MEM_PATH):
+            messagebox.showerror(
+                "No Old Data",
+                f"No previously downloaded {MEM_FILENAME} found at:\n{MEM_PATH}",
+            )
+            return
+
+        summary = (
             f"Logger: {LOGGER_OPTIONS.get(logger_choice)}\n"
             f"Logger IP: {LOGGER_IPS.get(logger_choice)}\n"
             f"Title: {report_title if report_title else '(No title)'}\n"
             f"Flashing Lights: {'Yes' if flashing_enabled else 'No'}\n"
-            f"Battery Voltage: {'Yes' if battery_enabled else 'No'}",
+            f"Battery Voltage: {'Yes' if battery_enabled else 'No'}"
         )
+
+        # Run the slow download/conversion/report in a worker thread so the progress
+        # dialog stays responsive; the worker only sets attributes, and all
+        # tkinter calls happen here on the main thread via polling.
+        self._status = "Starting..."
+        self._progress = None
+        self._result = None
+        self._show_progress_dialog()
+        threading.Thread(
+            target=self._generate_report,
+            args=(logger_choice, report_title, flashing_enabled, battery_enabled),
+            daemon=True,
+        ).start()
+        self.root.after(PROGRESS_POLL_MS, self._poll_worker, summary)
+
+    def _show_progress_dialog(self) -> None:
+        """Show a modal "in progress" dialog with a status line and busy bar."""
+        self.progress_dialog = tk.Toplevel(self.root, **MAIN_PADDING)
+        self.progress_dialog.title("Please Wait")
+        self.progress_dialog.resizable(False, False)
+        self.progress_dialog.transient(self.root)
+        # Ignore the close button until the work finishes
+        self.progress_dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        self.progress_label = tk.Label(
+            self.progress_dialog, text=self._status, width=45, anchor="w"
+        )
+        self.progress_label.pack()
+        self.progress_detail = tk.Label(
+            self.progress_dialog, text="", width=45, anchor="w"
+        )
+        self.progress_detail.pack(pady=(0, 10))
+        self.progress_bar = ttk.Progressbar(
+            self.progress_dialog, mode="indeterminate", length=300
+        )
+        self.progress_bar.pack()
+        self.progress_bar.start()
+
+        self.progress_dialog.grab_set()
+
+    def _poll_worker(self, summary: str) -> None:
+        """Update the progress dialog until the worker thread posts a result.
+
+        Args:
+            summary: Selected options, shown in the success message.
+        """
+        if self._result is None:
+            self.progress_label.config(text=self._status)
+            self._update_progress_bar()
+            self.root.after(PROGRESS_POLL_MS, self._poll_worker, summary)
+            return
+
+        self.progress_bar.stop()
+        self.progress_dialog.grab_release()
+        self.progress_dialog.destroy()
+
+        report_path, error = self._result
+        if error is not None:
+            messagebox.showerror(*error)
+            return
+
+        messagebox.showinfo(
+            "Success",
+            f"Report saved to:\n{report_path}\n\n{summary}",
+        )
+
+    def _update_progress_bar(self) -> None:
+        """Show the download percentage, or a busy bar when it is unknown."""
+        progress = self._progress
+        if progress is not None and progress[1]:
+            transferred, total = progress
+            percent = min(100, transferred * 100 // total)
+            if str(self.progress_bar["mode"]) != "determinate":
+                self.progress_bar.stop()
+                self.progress_bar.config(mode="determinate", maximum=100)
+            self.progress_bar["value"] = percent
+            self.progress_detail.config(
+                text=f"{percent}%  ({transferred / 1e6:.1f} of {total / 1e6:.1f} MB)"
+            )
+            return
+
+        if str(self.progress_bar["mode"]) != "indeterminate":
+            self.progress_bar.config(mode="indeterminate")
+            self.progress_bar.start()
+        if progress is not None:
+            # Server did not report the file size, so only bytes are known
+            self.progress_detail.config(text=f"{progress[0] / 1e6:.1f} MB received")
+        else:
+            self.progress_detail.config(text="")
+
+    def _record_progress(self, transferred: int, total: int | None) -> None:
+        """FTP progress callback; runs in the worker thread."""
+        self._progress = (transferred, total)
+
+    def _generate_report(
+        self,
+        logger_choice: int,
+        report_title: str,
+        keep_peaks: bool,
+        keep_minimums: bool,
+    ) -> None:
+        """Download MEMDATA.MEM (unless recovering old data), convert it to
+        text, and write the Excel report to the current directory.
+
+        Runs in a worker thread, so it must not touch tkinter. Progress is
+        reported through self._status, and on completion self._result is set
+        to (report_path, None) or (None, (error_title, error_message)).
+
+        Args:
+            logger_choice: Key into LOGGER_OPTIONS / LOGGER_IPS.
+            report_title: Report title, also used for the file name.
+            keep_peaks: Keep peak voltages (Flashing Lights).
+            keep_minimums: Keep minimum voltages (Battery Voltage).
+        """
+        if logger_choice == RECOVER_OLD_DATA:
+            logger.info("Using previously downloaded %s", MEM_PATH)
+        else:
+            ip_address = LOGGER_IPS[logger_choice]
+            self._status = (
+                f"Downloading {MEM_FILENAME} from "
+                f"{LOGGER_OPTIONS[logger_choice]} ({ip_address})..."
+            )
+            downloaded = fetch_file_via_ftp(
+                ip_address, MEM_FILENAME, on_progress=self._record_progress
+            )
+            self._progress = None
+            if downloaded is None:
+                self._result = (None, (
+                    "Download Failed",
+                    f"Could not download {MEM_FILENAME} from "
+                    f"{LOGGER_OPTIONS[logger_choice]} ({ip_address}).",
+                ))
+                return
+
+        self._status = f"Converting {MEM_FILENAME} to text..."
+        try:
+            info, channels, values = mem2txt.read_mem(MEM_PATH)
+            mem2txt.write_txt(TXT_PATH, info, channels, values)
+        except Exception as e:
+            logger.exception("Failed to convert %s", MEM_PATH)
+            self._result = (None, (
+                "Conversion Failed", f"Could not convert {MEM_FILENAME}:\n{e}"
+            ))
+            return
+
+        logger.info("Converted %d samples to %s", len(values), TXT_PATH)
+
+        self._status = "Writing Excel report..."
+        try:
+            time_seconds = np.arange(len(values)) * info["interval"]
+            report_path = report.build_report(
+                time_seconds, values, report_title, keep_peaks, keep_minimums
+            )
+        except Exception as e:
+            logger.exception("Failed to write report")
+            self._result = (None, (
+                "Report Failed",
+                f"Could not write the Excel report:\n{e}\n\n"
+                "If the file is open in Excel, close it and try again.",
+            ))
+            return
+
+        logger.info("Report written to %s", report_path)
+        self._result = (report_path, None)
 
     def on_cancel_clicked(self) -> None:
         """Handle the Cancel button click event."""

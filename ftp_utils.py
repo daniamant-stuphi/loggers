@@ -1,12 +1,22 @@
 import ftplib
 import os
+from collections.abc import Callable
 from tempfile import gettempdir
+
+# Give up on an unreachable logger (also applies to each later socket operation)
+FTP_TIMEOUT_SECONDS = 10
 
 def create_progress_callback(
     local_file,
     total_bytes: int | None,
+    on_progress: Callable[[int, int | None], None] | None = None,
 ):
-    """Create a callback that writes chunks and prints download progress."""
+    """Create a callback that writes chunks and prints download progress.
+
+    If on_progress is given, it is also called with
+    (transferred_bytes, total_bytes) after each chunk; total_bytes is None
+    when the server does not report the file size.
+    """
     transferred_bytes = 0
     last_percent_reported = -1
 
@@ -15,6 +25,8 @@ def create_progress_callback(
 
         local_file.write(data)
         transferred_bytes += len(data)
+        if on_progress is not None:
+            on_progress(transferred_bytes, total_bytes)
 
         if total_bytes and total_bytes > 0:
             percent_complete = int((transferred_bytes / total_bytes) * 100)
@@ -34,7 +46,11 @@ def create_progress_callback(
 
     return progress_callback
 
-def fetch_file_via_ftp(ip_address: str, remote_filename: str) -> str | None:
+def fetch_file_via_ftp(
+    ip_address: str,
+    remote_filename: str,
+    on_progress: Callable[[int, int | None], None] | None = None,
+) -> str | None:
     """
     Connects to an FTP server, downloads a specified file, and saves it 
     to the user's temporary directory with progress indication.
@@ -42,6 +58,7 @@ def fetch_file_via_ftp(ip_address: str, remote_filename: str) -> str | None:
     Args:
         ip_address: The IP address or hostname of the FTP server.
         remote_filename: The full path/name of the file on the remote server.
+        on_progress: Optional callback, see create_progress_callback().
 
     Returns:
         The absolute path to the downloaded file in the temp directory, 
@@ -49,12 +66,14 @@ def fetch_file_via_ftp(ip_address: str, remote_filename: str) -> str | None:
     """
     # Determine the local path in the user's temporary directory
     local_filepath = os.path.join(gettempdir(), remote_filename)
+    # Download to a partial file so a failed transfer leaves any previous copy intact
+    partial_filepath = local_filepath + ".part"
 
     try:
         print(f"Attempting to connect to FTP server at: {ip_address}")
         with ftplib.FTP() as ftp:
             # Connect to the server (assuming default port 21)
-            ftp.connect(ip_address)
+            ftp.connect(ip_address, timeout=FTP_TIMEOUT_SECONDS)
             
             # Attempt anonymous login first, which is common for public test servers
             try:
@@ -66,19 +85,24 @@ def fetch_file_via_ftp(ip_address: str, remote_filename: str) -> str | None:
             ftp.cwd("MEMORY")
             total_bytes = None
             try:
+                # Many servers refuse SIZE in the default ASCII mode
+                ftp.voidcmd("TYPE I")
                 total_bytes = ftp.size(remote_filename)
             except ftplib.all_errors:
                 # Some FTP servers do not support SIZE, so fall back to bytes-only progress.
                 total_bytes = None
 
-            with open(local_filepath, 'wb') as local_file:
-                progress_callback = create_progress_callback(local_file, total_bytes)
+            with open(partial_filepath, 'wb') as local_file:
+                progress_callback = create_progress_callback(
+                    local_file, total_bytes, on_progress
+                )
                 ftp.retrbinary(
                     f'RETR {remote_filename}',
                     progress_callback,
                     blocksize=8192,
                 )
 
+        os.replace(partial_filepath, local_filepath)
         print("\nSuccessfully downloaded file.")
         return local_filepath
 
@@ -88,12 +112,15 @@ def fetch_file_via_ftp(ip_address: str, remote_filename: str) -> str | None:
     except Exception as e:
         print(f"\nAn unexpected error occurred: {e}")
         return None
+    finally:
+        if os.path.exists(partial_filepath):
+            os.remove(partial_filepath)
 
 if __name__ == '__main__':
     # --- Example Usage (Requires a running FTP server for testing) ---
     # NOTE: Replace with actual credentials/server details for real use.
     TEST_IP = "192.168.10.35" # A public test FTP server
-    TEST_FILE = "MEMDATA.TXT"   # A file known to exist on the test server
+    TEST_FILE = "MEMDATA.MEM"   # A file known to exist on the test server
 
     print("--- Running FTP Test Example ---")
     downloaded_path = fetch_file_via_ftp(TEST_IP, TEST_FILE)

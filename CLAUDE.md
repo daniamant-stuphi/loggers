@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Purpose
 
-Windows/Python tool ("Test Lab Report Generator") that downloads datalogger memory files over FTP, parses the sampled voltages, and is intended to produce an Excel report with a graph. The pieces exist but are **not yet wired together**: `app.py`'s `on_ok_clicked()` only shows the selected options in a message box and does not call the FTP or parser modules. `README.md` has a "What Still Needs To Be Implemented" list that describes the intended workflow.
+Windows/Python tool ("Test Lab Report Generator") that downloads datalogger memory files over FTP, parses the sampled voltages, and is intended to produce an Excel report with a graph. The pipeline is **partly wired**: `app.py`'s `on_ok_clicked()` downloads `MEMDATA.MEM` over FTP and converts it to `MEMDATA.TXT` (both in `tempfile.gettempdir()`) with `mem2txt`, then passes the converted array (not the text file) to `report.py` to write the Excel report. This runs in a worker thread behind a progress dialog. `README.md` has a "What Still Needs To Be Implemented" list that describes the intended workflow.
 
 ## Commands
 
@@ -14,6 +14,7 @@ uv run app.py                  # tkinter GUI
 uv run ftp_utils.py            # live FTP download test (needs a logger on the LAN)
 uv run memdata_reader.py       # parse + plot MEMDATA.TXT from the system temp dir
 uv run mem2txt.py [MEMDATA.MEM] [output.txt]  # binary .MEM -> text export (default output memdata_converted.txt)
+uv run report.py [MEMDATA.TXT] [title]        # text export -> <title>.xlsx in the cwd (peaks + minimums)
 uv run pyinstaller app.spec    # build dist/app.exe (windowed, console=False)
 ```
 
@@ -25,9 +26,11 @@ There are no automated tests, linter, or formatter configured.
 
 Independent modules; the intended pipeline is GUI → FTP download → parse → Excel report:
 
-- **`app.py`**: `ReportGeneratorApp` (tkinter). Logger choice is an `IntVar` key into two parallel dicts, `LOGGER_OPTIONS` (label) and `LOGGER_IPS` (IP). Keep them in sync when adding loggers. `Recover Old Data` maps to `0.0.0.0` as a placeholder; its behaviour is undefined.
-- **`ftp_utils.py`**: `fetch_file_via_ftp(ip, filename)` does an anonymous login, `cwd("MEMORY")` on the logger, downloads into `tempfile.gettempdir()`, and returns the local path. It returns `None` on any error instead of raising, and reports progress via `print`, so callers must check for `None`.
+- **`app.py`**: `ReportGeneratorApp` (tkinter). Logger choice is an `IntVar` key into two parallel dicts, `LOGGER_OPTIONS` (label) and `LOGGER_IPS` (IP). Keep them in sync when adding loggers. `Recover Old Data` (the default, key `RECOVER_OLD_DATA`) skips the download and reconverts the last downloaded `MEMDATA.MEM`; its `0.0.0.0` IP is unused.
+- **`ftp_utils.py`**: `fetch_file_via_ftp(ip, filename)` does an anonymous login, `cwd("MEMORY")` on the logger, downloads into `tempfile.gettempdir()` via a `.part` file (so a failed download keeps the previous copy), and returns the local path. It returns `None` on any error instead of raising, and reports progress via `print`, so callers must check for `None`.
 - **`memdata_reader.py`**: `read_memdata(path)` returns `(time_seconds, voltage_columns)` in column-major form. It raises `ValueError` on malformed data. `plot_memdata()` imports matplotlib lazily.
+
+- **`report.py`**: `build_report()` reduces the samples to one row per `REDUCE_WINDOW_SECONDS` (10 s) window, keeping the per-channel peak (Flashing Lights) and/or minimum (Battery Voltage), and writes them with xlsxwriter to a `Data` sheet plus a `Graph` chartsheet. Time is in hours. The file is `safe_filename(title)` in the current working directory. A short final window is dropped because its peak or minimum would be misleading.
 
 - **`mem2txt.py`**: standalone converter from the Hioki LR8400's binary `MEMDATA.MEM` to the same text format the logger exports as `MEMDATA.TXT`, so its output can be fed to `read_memdata()`. The header is a sequence of 0x200-byte blocks tagged `H…`, with fields stored as NUL-padded ASCII at fixed offsets. The `HW` block holds sample count, trigger date/time, interval and title, and there is one `HWC1` block per channel (mode, range, unit, scaling factor/offset). Sample data follows as big-endian int16, interleaved by sample, and is scaled by `raw * factor + offset`. The offsets were reverse-engineered from observed files, not a spec. It depends on numpy.
 
