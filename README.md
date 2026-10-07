@@ -95,13 +95,12 @@ This file contains the data reader and a simple plotting helper.
 When `memdata_reader.py` is run directly, it reads the top-level `MEMDATA.TXT`
 file and displays a matplotlib graph.
 
-### `requirements.txt`
+### `pyproject.toml` and `uv.lock`
 
-The only listed runtime dependency is:
-
-```text
-matplotlib>=3.8,<4.0
-```
+The project is managed with [uv](https://docs.astral.sh/uv/). Runtime
+dependencies are `matplotlib` and `numpy`; `pyinstaller` is in the `dev`
+dependency group. `uv.lock` pins exact versions and `.python-version` selects
+Python 3.14.
 
 The GUI uses Python's built-in `tkinter` module. FTP support uses Python's
 built-in `ftplib` module.
@@ -126,30 +125,36 @@ Python code does not yet write to it.
 
 ## How To Run The Current Code
 
-Create and activate a Python environment, then install the dependency:
+Install the dependencies into `.venv` (uv creates it and fetches Python if
+needed):
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+uv sync
 ```
 
 Run the GUI:
 
 ```powershell
-python app.py
+uv run app.py
 ```
 
-Run the current parser/plotter against the local `MEMDATA.TXT`:
+Run the current parser/plotter against `MEMDATA.TXT` in the system temp
+directory:
 
 ```powershell
-python memdata_reader.py
+uv run memdata_reader.py
 ```
 
 Run the FTP helper test:
 
 ```powershell
-python ftp_utils.py
+uv run ftp_utils.py
+```
+
+Build the Windows executable:
+
+```powershell
+uv run pyinstaller app.spec
 ```
 
 The FTP test requires a reachable logger at `192.168.10.34` with a

@@ -22,6 +22,3 @@ __pycache__/
 test.xlsx
 # Image artifacts
 Screenshot*
-
-# Dependency management folders (if they are local copies)
-install/

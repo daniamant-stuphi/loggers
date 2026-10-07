@@ -1,0 +1,18 @@
+[project]
+name = "loggers"
+version = "0.1.0"
+description = "Test Lab Report Generator: download, parse and report on datalogger memory files"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.8,<4.0",
+    "numpy>=2.0,<3.0",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller",
+]
+
+[tool.uv]
+package = false

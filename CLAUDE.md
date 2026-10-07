@@ -9,16 +9,15 @@ Windows/Python tool ("Test Lab Report Generator") that downloads datalogger memo
 ## Commands
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-
-python app.py              # tkinter GUI
-python ftp_utils.py        # live FTP download test (needs a logger on the LAN)
-python memdata_reader.py   # parse + plot MEMDATA.TXT from the system temp dir
-python mem2txt.py [MEMDATA.MEM] [output.txt]  # binary .MEM -> text export (default output memdata_converted.txt)
-pyinstaller app.spec       # build dist/app.exe (windowed, console=False)
+uv sync                        # create/update .venv from uv.lock (Python 3.14 via .python-version)
+uv run app.py                  # tkinter GUI
+uv run ftp_utils.py            # live FTP download test (needs a logger on the LAN)
+uv run memdata_reader.py       # parse + plot MEMDATA.TXT from the system temp dir
+uv run mem2txt.py [MEMDATA.MEM] [output.txt]  # binary .MEM -> text export (default output memdata_converted.txt)
+uv run pyinstaller app.spec    # build dist/app.exe (windowed, console=False)
 ```
+
+Dependencies live in `pyproject.toml` (`uv add <pkg>`, or `uv add --dev <pkg>` for build tools such as pyinstaller); there is no `requirements.txt`. The project is not an installable package (`tool.uv.package = false`).
 
 There are no automated tests, linter, or formatter configured.
 
@@ -49,4 +48,4 @@ The checked-in sample `MEMDATA.TXT` is about 317k lines. Don't read it whole; us
 ## Gotchas
 
 - Keep `.gitignore` comments on their own lines. Git treats a `# comment` after a pattern as part of the pattern.
-- PyInstaller is installed but not listed in `requirements.txt`. If new runtime dependencies are added (e.g. an Excel library), update `requirements.txt` and check `app.spec` (`hiddenimports`/`datas`).
+- When adding runtime dependencies (e.g. an Excel library), check `app.spec` (`hiddenimports`/`datas`) so the PyInstaller build includes them.
