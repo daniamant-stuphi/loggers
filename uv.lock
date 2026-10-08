@@ -279,6 +279,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "pillow" },
     { name = "pyinstaller" },
 ]
 
@@ -290,7 +291,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pyinstaller" }]
+dev = [
+    { name = "pillow", specifier = ">=12.3.0" },
+    { name = "pyinstaller" },
+]
 
 [[package]]
 name = "macholib"

@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 import logging
 import os
+import sys
 import threading
 from tempfile import gettempdir
 
@@ -38,10 +39,10 @@ LOGGER_OPTIONS = {
 
 # Logger IP addresses
 LOGGER_IPS = {
-    # 1: "192.168.10.34",  # Logger 4
-    # 2: "192.168.10.35",  # Logger 5
-    1: "192.168.10.54",  # Logger 4
-    2: "192.168.10.55",  # Logger 5
+    1: "192.168.10.34",  # Logger 4
+    2: "192.168.10.35",  # Logger 5
+    # 1: "192.168.10.54",  # Logger 4
+    # 2: "192.168.10.55",  # Logger 5
     3: "0.0.0.0"   # Recover Old Data
 }
 
@@ -52,6 +53,14 @@ RECOVER_OLD_DATA = 3
 MEM_FILENAME = "MEMDATA.MEM"
 MEM_PATH = os.path.join(gettempdir(), MEM_FILENAME)
 TXT_PATH = os.path.join(gettempdir(), "MEMDATA.TXT")
+
+# Window icon. A PyInstaller build unpacks its bundled files to sys._MEIPASS;
+# when run from source it is found next to this file.
+ICON_PATH = os.path.join(
+    getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))),
+    "icon",
+    "app.ico",
+)
 
 # How often the progress dialog checks on the download/conversion thread
 PROGRESS_POLL_MS = 100
@@ -79,6 +88,11 @@ class ReportGeneratorApp:
         """Configure the main window properties."""
         self.root.title(WINDOW_TITLE)
         self.root.resizable(False, False)
+        try:
+            # default= also applies it to the progress dialog and message boxes
+            self.root.iconbitmap(default=ICON_PATH)
+        except tk.TclError:
+            logger.warning("Could not load window icon %s", ICON_PATH)
         logger.info("Window initialized: %s", WINDOW_TITLE)
 
     def _setup_variables(self) -> None:
@@ -161,17 +175,50 @@ class ReportGeneratorApp:
             options_frame,
             text="Flashing Lights",
             variable=self.flashing_lights_enabled,
+            command=self._update_options,
         )
         flashing_button.pack(anchor="w", pady=2)
         flashing_button.focus_set()  # Match focus dotted line from screenshot
 
-        tk.Checkbutton(
+        # Indented under Flashing Lights, since it only refines that option
+        self.battery_button = tk.Checkbutton(
             options_frame,
             text="Battery Voltage",
             variable=self.battery_voltage_enabled,
-        ).pack(anchor="w", pady=2)
+            command=self._update_options,
+        )
+        self.battery_button.pack(anchor="w", padx=(20, 0), pady=2)
 
+        self.options_hint = tk.Label(
+            options_frame, fg="gray40", justify=tk.LEFT, wraplength=220
+        )
+        self.options_hint.pack(anchor="w", pady=(6, 0))
+
+        self._update_options()
         return options_frame
+
+    def _update_options(self) -> None:
+        """Enable Battery Voltage only with Flashing Lights, and describe
+        what the report will contain."""
+        if self.flashing_lights_enabled.get():
+            self.battery_button.config(state=tk.NORMAL)
+        else:
+            self.battery_voltage_enabled.set(False)
+            self.battery_button.config(state=tk.DISABLED)
+
+        mode = report.report_mode(
+            self.flashing_lights_enabled.get(), self.battery_voltage_enabled.get()
+        )
+        window = report.REDUCE_WINDOW_SECONDS
+        self.options_hint.config(text={
+            report.MODE_RAW: (
+                "Report: unprocessed data (averaged every "
+                f"{window} s if too dense).\n"
+                "Battery Voltage needs Flashing Lights."
+            ),
+            report.MODE_PEAK: f"Report: peak value every {window} s.",
+            report.MODE_MIN: f"Report: minimum value every {window} s.",
+        }[mode])
 
     def _create_report_title_frame(self, parent: tk.Widget) -> tk.Frame:
         """Create the report title entry frame.
@@ -229,14 +276,6 @@ class ReportGeneratorApp:
             flashing_enabled,
             battery_enabled,
         )
-
-        if not (flashing_enabled or battery_enabled):
-            messagebox.showerror(
-                "No Option Selected",
-                "Select Flashing Lights and/or Battery Voltage to choose "
-                "which values the report keeps.",
-            )
-            return
 
         if logger_choice == RECOVER_OLD_DATA and not os.path.exists(MEM_PATH):
             messagebox.showerror(
@@ -313,6 +352,16 @@ class ReportGeneratorApp:
             messagebox.showerror(*error)
             return
 
+        try:
+            # Opens the report in whatever handles .xlsx (normally Excel)
+            os.startfile(report_path)
+        except OSError as e:
+            logger.exception("Failed to open %s", report_path)
+            messagebox.showerror(
+                "Could Not Open Report",
+                f"The report was saved, but could not be opened:\n{e}",
+            )
+
         messagebox.showinfo(
             "Success",
             f"Report saved to:\n{report_path}\n\n{summary}",
@@ -350,11 +399,11 @@ class ReportGeneratorApp:
         self,
         logger_choice: int,
         report_title: str,
-        keep_peaks: bool,
-        keep_minimums: bool,
+        flashing_lights: bool,
+        battery_voltage: bool,
     ) -> None:
         """Download MEMDATA.MEM (unless recovering old data), convert it to
-        text, and write the Excel report to the current directory.
+        text, and write the Excel report to the temp directory.
 
         Runs in a worker thread, so it must not touch tkinter. Progress is
         reported through self._status, and on completion self._result is set
@@ -363,8 +412,9 @@ class ReportGeneratorApp:
         Args:
             logger_choice: Key into LOGGER_OPTIONS / LOGGER_IPS.
             report_title: Report title, also used for the file name.
-            keep_peaks: Keep peak voltages (Flashing Lights).
-            keep_minimums: Keep minimum voltages (Battery Voltage).
+            flashing_lights: Keep each window's peak instead of the raw data.
+            battery_voltage: With flashing_lights, keep each window's
+                minimum instead of its peak.
         """
         if logger_choice == RECOVER_OLD_DATA:
             logger.info("Using previously downloaded %s", MEM_PATH)
@@ -403,7 +453,7 @@ class ReportGeneratorApp:
         try:
             time_seconds = np.arange(len(values)) * info["interval"]
             report_path = report.build_report(
-                time_seconds, values, report_title, keep_peaks, keep_minimums
+                time_seconds, values, report_title, flashing_lights, battery_voltage
             )
         except Exception as e:
             logger.exception("Failed to write report")

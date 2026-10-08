@@ -111,7 +111,7 @@ built-in `ftplib` module.
 GUI executable named `app`.
 
 The `build/` and `dist/` folders appear to be generated PyInstaller output.
-`dist/app.exe` is the built executable.
+`dist/DanDataLoggers.exe` is the built executable.
 
 ### `MEMDATA.TXT`
 

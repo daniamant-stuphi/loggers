@@ -1,22 +1,36 @@
 """Build the Excel test report from parsed MEMDATA samples.
 
-The logged channels pulse (the voltage dips each time a light flashes), so
-the raw data is far too dense to chart. It is reduced to one row per
-REDUCE_WINDOW_SECONDS window, keeping the peak (resting voltage between
-flashes) and/or the minimum (voltage under load) of each channel.
+What each channel's column holds depends on the report options:
 
-Usage:  python report.py [MEMDATA.TXT] [title]
+- Flashing Lights off: the raw samples. If there are more than MAX_RAW_ROWS
+  of them, they are averaged over each REDUCE_WINDOW_SECONDS window instead.
+- Flashing Lights on: the channels pulse (the voltage dips each time a light
+  flashes), so each REDUCE_WINDOW_SECONDS window keeps its peak (resting
+  voltage between flashes).
+- Flashing Lights and Battery Voltage on: each window keeps its minimum
+  (voltage under load) instead.
+
+Usage:  python report.py [MEMDATA.TXT] [title] [raw|peak|min]
 """
 import math
 import os
 import re
 import sys
+from tempfile import gettempdir
 
 import numpy as np
 import xlsxwriter
 
 # Each output row summarises this many seconds of samples
 REDUCE_WINDOW_SECONDS = 10
+
+# Unprocessed data with more rows than this is averaged per window instead
+MAX_RAW_ROWS = 50_000
+
+# What each output row holds for a channel
+MODE_RAW = "raw"
+MODE_PEAK = "peak"
+MODE_MIN = "min"
 
 DATA_SHEET = "Data"
 GRAPH_SHEET = "Graph"
@@ -29,10 +43,12 @@ RESERVED_NAMES = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 
-# One colour per channel, so a channel's peak and minimum lines match
+# One distinct colour for each of the logger's up to 16 channels
 CHANNEL_COLOURS = [
     "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD",
     "#8C564B", "#E377C2", "#7F7F7F", "#BCBD22", "#17BECF",
+    "#393B79", "#637939", "#8C6D31", "#843C39", "#7B4173",
+    "#000000",
 ]
 
 
@@ -53,94 +69,113 @@ def safe_filename(title: str) -> str:
     return f"{name}.xlsx"
 
 
+def report_mode(flashing_lights: bool, battery_voltage: bool) -> str:
+    """Map the report options to MODE_RAW, MODE_PEAK or MODE_MIN.
+
+    Battery Voltage only has an effect when Flashing Lights is selected.
+    """
+    if not flashing_lights:
+        return MODE_RAW
+    return MODE_MIN if battery_voltage else MODE_PEAK
+
+
 def reduce_samples(
     time_seconds: np.ndarray,
     values: np.ndarray,
-    keep_peaks: bool,
-    keep_minimums: bool,
+    mode: str,
     window_seconds: float = REDUCE_WINDOW_SECONDS,
-) -> tuple[np.ndarray, list[tuple[int, str, np.ndarray]]]:
-    """Reduce the samples to one row per window.
+) -> tuple[np.ndarray, np.ndarray]:
+    """Reduce the samples to one row per window, as the mode requires.
 
     Args:
         time_seconds: Sample times in seconds.
         values: Channel values, one row per sample and one column per
             channel (the layout mem2txt.read_mem() returns).
-        keep_peaks: Keep the maximum of each window.
-        keep_minimums: Keep the minimum of each window.
+        mode: MODE_RAW keeps the samples as they are (averaged per window
+            if there are more than MAX_RAW_ROWS), MODE_PEAK keeps the
+            maximum of each window and MODE_MIN the minimum.
         window_seconds: Length of each window.
 
     Returns:
-        (time_hours, series): time_hours is the start of each window, and
-        series is a list of (channel_index, kind, values) where kind is
-        "peak" or "min".
+        (time_hours, values): time_hours is the time of each row (the start
+        of its window), and values has one row per output row and one
+        column per channel.
     """
     times = np.asarray(time_seconds)
     values = np.asarray(values)
+    if mode == MODE_RAW and len(times) <= MAX_RAW_ROWS:
+        return times / 3600, values
+
     interval = times[1] - times[0] if len(times) > 1 else window_seconds
     samples_per_window = max(1, round(window_seconds / interval))
     starts = np.arange(0, len(times), samples_per_window)
+
+    if mode == MODE_RAW:
+        # Too dense, so average each window; a short final window still
+        # gives a meaningful average
+        counts = np.diff(np.append(starts, len(times)))
+        reduced = np.add.reduceat(values, starts, axis=0) / counts[:, None]
+        return times[starts] / 3600, reduced
+
     if len(starts) > 1 and len(times) - starts[-1] < samples_per_window:
         # A short final window may hold only part of a flash cycle, so its
         # peak/minimum is misleading; drop it.
         values = values[: starts[-1]]
         starts = starts[:-1]
 
-    peaks = np.maximum.reduceat(values, starts, axis=0) if keep_peaks else None
-    minimums = np.minimum.reduceat(values, starts, axis=0) if keep_minimums else None
-
-    series = []
-    for channel in range(values.shape[1]):
-        if peaks is not None:
-            series.append((channel, "peak", peaks[:, channel]))
-        if minimums is not None:
-            series.append((channel, "min", minimums[:, channel]))
-    return times[starts] / 3600, series
+    if mode == MODE_PEAK:
+        reduced = np.maximum.reduceat(values, starts, axis=0)
+    elif mode == MODE_MIN:
+        reduced = np.minimum.reduceat(values, starts, axis=0)
+    else:
+        raise ValueError(f"Unknown report mode: {mode!r}")
+    return times[starts] / 3600, reduced
 
 
 def write_report(
     path: str,
     title: str,
     time_hours: np.ndarray,
-    series: list[tuple[int, str, np.ndarray]],
+    values: np.ndarray,
 ) -> None:
-    """Write the reduced data to a Data sheet and chart it on a Graph sheet."""
+    """Write the data to a Data sheet and chart it on a Graph sheet."""
     with xlsxwriter.Workbook(path) as workbook:
         header_format = workbook.add_format({"bold": True, "bottom": 1})
         hours_format = workbook.add_format({"num_format": "0.0000"})
         volts_format = workbook.add_format({"num_format": "0.000"})
 
         sheet = workbook.add_worksheet(DATA_SHEET)
+        channels = values.shape[1]
         headers = ["Time (h)"] + [
-            f"Ch {channel + 1} {kind} (V)" for channel, kind, _ in series
+            f"Ch {channel + 1} (V)" for channel in range(channels)
         ]
         sheet.write_row(0, 0, headers, header_format)
         sheet.write_column(1, 0, time_hours.tolist(), hours_format)
-        for col, (_, _, values) in enumerate(series, start=1):
-            sheet.write_column(1, col, values.tolist(), volts_format)
+        for channel in range(channels):
+            sheet.write_column(
+                1, channel + 1, values[:, channel].tolist(), volts_format
+            )
         sheet.set_column(0, len(headers) - 1, 14)
         sheet.freeze_panes(1, 1)
 
         last_row = len(time_hours)
         chart = workbook.add_chart({"type": "scatter", "subtype": "straight"})
-        for col, (channel, kind, _) in enumerate(series, start=1):
-            line = {
-                "color": CHANNEL_COLOURS[channel % len(CHANNEL_COLOURS)],
-                "width": 1,
-            }
-            if kind == "min":
-                line["dash_type"] = "dash"
+        for channel in range(channels):
+            col = channel + 1
             chart.add_series({
                 "name": [DATA_SHEET, 0, col],
                 "categories": [DATA_SHEET, 1, 0, last_row, 0],
                 "values": [DATA_SHEET, 1, col, last_row, col],
-                "line": line,
+                "line": {
+                    "color": CHANNEL_COLOURS[channel % len(CHANNEL_COLOURS)],
+                    "width": 1,
+                },
             })
         chart.set_title({"name": title or "Logger Data"})
         # Fixed axis formats (otherwise they inherit the cell formats), and a
         # voltage range around the data rather than from 0 V
-        lowest = min(float(values.min()) for _, _, values in series)
-        highest = max(float(values.max()) for _, _, values in series)
+        lowest = float(values.min())
+        highest = float(values.max())
         chart.set_x_axis({
             "name": "Time (hours)",
             "min": 0,
@@ -164,19 +199,25 @@ def build_report(
     time_seconds: np.ndarray,
     values: np.ndarray,
     title: str,
-    keep_peaks: bool,
-    keep_minimums: bool,
+    flashing_lights: bool,
+    battery_voltage: bool,
 ) -> str:
-    """Reduce the samples and write the report to the current directory.
+    """Reduce the samples and write the report to the system temp directory,
+    alongside the downloaded MEMDATA files.
+
+    Args:
+        flashing_lights: Keep each window's peak instead of the raw data.
+        battery_voltage: With flashing_lights, keep each window's minimum
+            instead of its peak. Ignored without flashing_lights.
 
     Returns:
         The absolute path of the written report.
     """
-    time_hours, series = reduce_samples(
-        time_seconds, values, keep_peaks, keep_minimums
+    time_hours, reduced = reduce_samples(
+        time_seconds, values, report_mode(flashing_lights, battery_voltage)
     )
-    path = os.path.abspath(safe_filename(title))
-    write_report(path, title, time_hours, series)
+    path = os.path.join(gettempdir(), safe_filename(title))
+    write_report(path, title, time_hours, reduced)
     return path
 
 
@@ -185,8 +226,15 @@ if __name__ == "__main__":
 
     src = sys.argv[1] if len(sys.argv) > 1 else "MEMDATA.TXT"
     report_title = sys.argv[2] if len(sys.argv) > 2 else "Test Report"
+    cli_mode = sys.argv[3] if len(sys.argv) > 3 else MODE_PEAK
+    if cli_mode not in (MODE_RAW, MODE_PEAK, MODE_MIN):
+        sys.exit(f"Mode must be {MODE_RAW}, {MODE_PEAK} or {MODE_MIN}")
     time_seconds, voltage_columns = read_memdata(src)
     path = build_report(
-        np.array(time_seconds), np.array(voltage_columns).T, report_title, True, True
+        np.array(time_seconds),
+        np.array(voltage_columns).T,
+        report_title,
+        flashing_lights=cli_mode != MODE_RAW,
+        battery_voltage=cli_mode == MODE_MIN,
     )
     print("Wrote", path)

@@ -18,7 +18,7 @@ __pycache__/
 
 # Logs and Data (Based on existing files)
 *.log
-# Generated Excel reports (report.py writes them to the working directory)
+# Generated Excel reports
 *.xlsx
 # Local sample logger files used for testing
 testdata/

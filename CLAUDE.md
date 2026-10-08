@@ -14,8 +14,9 @@ uv run app.py                  # tkinter GUI
 uv run ftp_utils.py            # live FTP download test (needs a logger on the LAN)
 uv run memdata_reader.py       # parse + plot MEMDATA.TXT from the system temp dir
 uv run mem2txt.py [MEMDATA.MEM] [output.txt]  # binary .MEM -> text export (default output memdata_converted.txt)
-uv run report.py [MEMDATA.TXT] [title]        # text export -> <title>.xlsx in the cwd (peaks + minimums)
-uv run pyinstaller app.spec    # build dist/app.exe (windowed, console=False)
+uv run report.py [MEMDATA.TXT] [title] [raw|peak|min]  # text export -> <title>.xlsx in the temp dir (default peak)
+uv run make_icon.py            # rebuild icon/app.ico from icon/icon_<size>.png (run after editing the PNGs)
+uv run pyinstaller app.spec    # build dist/DanDataLoggers.exe (windowed, console=False, icon/app.ico)
 ```
 
 Dependencies live in `pyproject.toml` (`uv add <pkg>`, or `uv add --dev <pkg>` for build tools such as pyinstaller); there is no `requirements.txt`. The project is not an installable package (`tool.uv.package = false`).
@@ -30,7 +31,7 @@ Independent modules; the intended pipeline is GUI → FTP download → parse →
 - **`ftp_utils.py`**: `fetch_file_via_ftp(ip, filename)` does an anonymous login, `cwd("MEMORY")` on the logger, downloads into `tempfile.gettempdir()` via a `.part` file (so a failed download keeps the previous copy), and returns the local path. It returns `None` on any error instead of raising, and reports progress via `print`, so callers must check for `None`.
 - **`memdata_reader.py`**: `read_memdata(path)` returns `(time_seconds, voltage_columns)` in column-major form. It raises `ValueError` on malformed data. `plot_memdata()` imports matplotlib lazily.
 
-- **`report.py`**: `build_report()` reduces the samples to one row per `REDUCE_WINDOW_SECONDS` (10 s) window, keeping the per-channel peak (Flashing Lights) and/or minimum (Battery Voltage), and writes them with xlsxwriter to a `Data` sheet plus a `Graph` chartsheet. Time is in hours. The file is `safe_filename(title)` in the current working directory. A short final window is dropped because its peak or minimum would be misleading.
+- **`report.py`**: `build_report()` writes one column per channel with xlsxwriter to a `Data` sheet plus a `Graph` chartsheet. `report_mode()` maps the options to what the columns hold. With Flashing Lights off, the data is unprocessed, but it is averaged per `REDUCE_WINDOW_SECONDS` (10 s) window if there are more than `MAX_RAW_ROWS` samples. With Flashing Lights on, it holds each window's peak. With Battery Voltage also on, it holds each window's minimum instead. Battery Voltage alone does nothing, so the GUI disables it until Flashing Lights is ticked. Time is in hours. The file is `safe_filename(title)` in `tempfile.gettempdir()`, next to `MEMDATA.MEM`/`MEMDATA.TXT`. For peak/min, a short final window is dropped because its value would be misleading.
 
 - **`mem2txt.py`**: standalone converter from the Hioki LR8400's binary `MEMDATA.MEM` to the same text format the logger exports as `MEMDATA.TXT`, so its output can be fed to `read_memdata()`. The header is a sequence of 0x200-byte blocks tagged `H…`, with fields stored as NUL-padded ASCII at fixed offsets. The `HW` block holds sample count, trigger date/time, interval and title, and there is one `HWC1` block per channel (mode, range, unit, scaling factor/offset). Sample data follows as big-endian int16, interleaved by sample, and is scaled by `raw * factor + offset`. The offsets were reverse-engineered from observed files, not a spec. It depends on numpy.
 
